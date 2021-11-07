@@ -1,30 +1,46 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
+import traceback
 import json
 import argparse
 import sys
+import os
+import types
+from collections.abc import Iterable
+from itertools import chain
 from io import StringIO
 import html
 
 COMMAND_DOC_EXAMPLES="""
-=== Example: Supplies as a configuration file ===
+=== Example: Supply File Example ===
 
-eagle-gensupply.py --supplies example.json --output example.lbr
+eagle-gensupply.py --in example.json --out path/to/output
 
 example.json
 >>  {
->>      "title" : "My Library Title",
->>      "supplies" : [
->>          {"name":"VSupply+", "style":"StyleName1"},
->>          {"name":"VSupply-", "style":"StyleName2"},
->>          {"name":"VSupply-"}
->>      ]
+>>      "prefix" : "sup2_",               // Optional
+>>      "output" : "~/EAGLE/lbr/",        // Optional
+>>      "groups" : {
+>>          "symbolic" : {
+>>              "title" : "Supply: Symbolic",
+>>              "supplies": [
+>>                  {"name":"Gnd",      "style":"F-"},
+>>                  {"name":"Vdd",      "style":"F+"},
+>>                  {"name":"Vcc",      "style":"F+"},
+>>                  {"name":"Vee",      "style":"F-"},
+>>                  {"name":"Vss",      "style":"F-"}
+>>              ]
+>>          },
+>>          "absolute": {
+>>              "title" : "Supply: Absolute Common",
+>>              "supplies": [
+>>                  {"name":"+3V3",       "style":"F+"},
+>>                  {"name":"+5V",        "style":"F+"},
+>>                  {"name":"-3V3",       "style":"F-"},
+>>                  {"name":"-5V",        "style":"F-"}
+>>              ]
+>>          },
+>>      }
 >>  }
-
-=== Example: Supplies as Arguments ===
-
-eagle-gensupply.py --add-supply "+5V:+" --add-supply "|-5V:-"
-                   --add-supply="-12V" --add-supply="+12V"
-                   --output test.lbr
 """
 
 COMMAND_DOC_INFO="""
@@ -130,7 +146,7 @@ eaglecad-gensupply.&lt;/a&gt;&lt;p&gt;
 
 SUPPLY_DEV_TEMPLATE="""
     <deviceset name="{supply}" prefix="P+">
-    <description>&lt;b&gt;SUPPLY SYMBOL&lt;/b&gt; {supply_esc}</description>
+    <description>&lt;b&gt;SUPPLY SYMBOL&lt;/b&gt; {supply_esc2}</description>
     <gates>
     <gate name="G$1" symbol="{supply}" x="0" y="0"/>
     </gates>
@@ -144,205 +160,682 @@ SUPPLY_DEV_TEMPLATE="""
     </deviceset>
 """
 
+# Helper Regex to help transform symbols from eagle files:
+# Rename Symbol
+#               1      23                  45
+# <symbol name="(.*?)">((.|\n)*?)name=".*?"((.|\n)*?)</symbol>
+#     "\1" : """\n<symbol name="{supply}">\2name="{supply}"\4</symbol>\n""",
 SUPPLY_SYM_TEMPLATES = {
-    "arrow3+" : """
+    "TRIANGLE+" : """
         <symbol name="{supply}">
-        <wire x1="0.889" y1="-1.27" x2="0" y2="0.127" width="0.254" layer="94"/>
-        <wire x1="0" y1="0.127" x2="-0.889" y2="-1.27" width="0.254" layer="94"/>
-        <wire x1="-0.889" y1="-1.27" x2="0.889" y2="-1.27" width="0.254" layer="94"/>
-        <text x="0" y="1.27" size="1.778" layer="96" align="center">&gt;VALUE</text>
-        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
-        </symbol>""",
-    "arrow3-" : """
-        <symbol name="{supply}">
-        <wire x1="-0.889" y1="1.27" x2="0" y2="-0.127" width="0.254" layer="94"/>
-        <wire x1="0" y1="-0.127" x2="0.889" y2="1.27" width="0.254" layer="94"/>
-        <wire x1="-0.889" y1="1.27" x2="0.889" y2="1.27" width="0.254" layer="94"/>
-        <text x="0" y="-1.27" size="1.778" layer="96" align="center">&gt;VALUE</text>
-        <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
-        </symbol>
-    """,
-    "split-arrow3" : """
-        <symbol name="{supply}">
-        <wire x1="2.54" y1="-0.889" x2="3.937" y2="0" width="0.254" layer="94"/>
-        <wire x1="3.937" y1="0" x2="2.54" y2="0.889" width="0.254" layer="94"/>
-        <wire x1="2.54" y1="0.889" x2="2.54" y2="0" width="0.254" layer="94"/>
-        <text x="-5.08" y="1.27" size="1.778" layer="96">&gt;VALUE</text>
-        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
-        <wire x1="2.54" y1="0" x2="2.54" y2="-0.889" width="0.254" layer="94"/>
-        <wire x1="-2.54" y1="0.889" x2="-3.937" y2="0" width="0.254" layer="94"/>
-        <wire x1="-3.937" y1="0" x2="-2.54" y2="-0.889" width="0.254" layer="94"/>
-        <wire x1="-2.54" y1="-0.889" x2="-2.54" y2="0" width="0.254" layer="94"/>
-        <wire x1="-2.54" y1="0" x2="-2.54" y2="0.889" width="0.254" layer="94"/>
-        <wire x1="-2.54" y1="0" x2="2.54" y2="0" width="0.254" layer="94" style="shortdash"/>
-        </symbol>
-    """,
-    "arrow2+" : """
-        <symbol name="{supply}">
-        <wire x1="1.27" y1="-1.905" x2="0" y2="0" width="0.254" layer="94"/>
-        <wire x1="0" y1="0" x2="-1.27" y2="-1.905" width="0.254" layer="94"/>
-        <text x="0" y="1.27" size="1.778" layer="96" align="center">&gt;VALUE</text>
+        <wire x1="0.889" y1="-1.27" x2="0" y2="0.127" width="0.15" layer="94"/>
+        <wire x1="0" y1="0.127" x2="-0.889" y2="-1.27" width="0.15" layer="94"/>
+        <wire x1="-0.889" y1="-1.27" x2="0.889" y2="-1.27" width="0.15" layer="94"/>
+        <text x="0" y="1.27" size="1.4" layer="96" align="center">&gt;VALUE</text>
         <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
         </symbol>
     """,
-    "arrow2-" : """
+    "COMMON" : """
+    <symbol name="{supply}">
+        <text x="0" y="-3.81" size="1.4" layer="96" align="center">&gt;VALUE</text>
+        <pin name="SUPPLY" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
+        <wire x1="0" y1="0" x2="-2.54" y2="0" width="0.254" layer="94"/>
+        <wire x1="-2.54" y1="0" x2="-5.08" y2="-2.54" width="0.254" layer="94"/>
+        <wire x1="-2.54" y1="-2.54" x2="0" y2="0" width="0.254" layer="94"/>
+        <wire x1="0" y1="0" x2="2.54" y2="0" width="0.254" layer="94"/>
+        <wire x1="2.54" y1="0" x2="0" y2="-2.54" width="0.254" layer="94"/>
+    </symbol>
+    """,
+    "ARROW2+" : """
         <symbol name="{supply}">
-        <wire x1="-1.27" y1="1.905" x2="0" y2="0" width="0.254" layer="94"/>
-        <wire x1="0" y1="0" x2="1.27" y2="1.905" width="0.254" layer="94"/>
-        <text x="0" y="-1.27" size="1.778" layer="96" align="center">&gt;VALUE</text>
+        <wire x1="1.27" y1="-1.905" x2="0" y2="0" width="0.15" layer="94"/>
+        <wire x1="0" y1="0" x2="-1.27" y2="-1.905" width="0.15" layer="94"/>
+        <wire x1="1.27" y1="-0.635" x2="0" y2="1.27" width="0.15" layer="94"/>
+        <wire x1="0" y1="1.27" x2="-1.27" y2="-0.635" width="0.15" layer="94"/>
+        <text x="0" y="2.286" size="1.4" layer="96" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
+        </symbol>
+    """,
+    "TRIANGLE-" : """
+        <symbol name="{supply}">
+        <wire x1="-0.889" y1="1.27" x2="0" y2="-0.127" width="0.15" layer="94"/>
+        <wire x1="0" y1="-0.127" x2="0.889" y2="1.27" width="0.15" layer="94"/>
+        <wire x1="-0.889" y1="1.27" x2="0.889" y2="1.27" width="0.15" layer="94"/>
+        <text x="0" y="-1.27" size="1.4" layer="96" align="center">&gt;VALUE</text>
         <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
         </symbol>
     """,
-    "gnd_flat" : """
+    "ARROW2-" : """
         <symbol name="{supply}">
-        <wire x1="-1.905" y1="0" x2="1.905" y2="0" width="0.254" layer="94"/>
-        <text x="0" y="-1.27" size="1.778" layer="96" align="center">&gt;VALUE</text>
+        <wire x1="-1.27" y1="1.905" x2="0" y2="0" width="0.15" layer="94"/>
+        <wire x1="0" y1="0" x2="1.27" y2="1.905" width="0.15" layer="94"/>
+        <wire x1="-1.27" y1="0.635" x2="0" y2="-1.27" width="0.15" layer="94"/>
+        <wire x1="0" y1="-1.27" x2="1.27" y2="0.635" width="0.15" layer="94"/>
+        <text x="0" y="-2.286" size="1.4" layer="96" rot="R180" align="center">&gt;VALUE</text>
         <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
         </symbol>
     """,
-    "gnd_double" : """
+    "GND1" : """
         <symbol name="{supply}">
-        <wire x1="-1.905" y1="0" x2="1.905" y2="0" width="0.254" layer="94"/>
-        <wire x1="-1.0922" y1="-0.508" x2="1.0922" y2="-0.508" width="0.254" layer="94"/>
-        <text x="0" y="-1.905" size="1.778" layer="96" rot="R180" align="center">&gt;VALUE</text>
+        <wire x1="-1.905" y1="0" x2="1.905" y2="0" width="0.15" layer="94"/>
+        <text x="0" y="-1.27" size="1.4" layer="96" align="center">&gt;VALUE</text>
         <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
+        </symbol>
+    """,
+    "GND2" : """
+        <symbol name="{supply}">
+        <wire x1="-1.905" y1="0" x2="1.905" y2="0" width="0.15" layer="94"/>
+        <wire x1="-1.0922" y1="-0.508" x2="1.0922" y2="-0.508" width="0.15" layer="94"/>
+        <text x="0" y="-1.905" size="1.4" layer="96" rot="R180" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
+        </symbol>
+    """,
+    "GND3" : """
+        <symbol name="{supply}">
+        <wire x1="-1.905" y1="0" x2="1.905" y2="0" width="0.15" layer="94"/>
+        <text x="0" y="-2.54" size="1.4" layer="96" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
+        <wire x1="-1.27" y1="-0.635" x2="1.27" y2="-0.635" width="0.15" layer="94"/>
+        <wire x1="-0.635" y1="-1.27" x2="0.635" y2="-1.27" width="0.15" layer="94"/>
+        </symbol>
+    """,
+    "GND3:DASH" : """
+        <symbol name="{supply}">
+        <wire x1="-1.905" y1="0" x2="1.905" y2="0" width="0.15" layer="94" style="shortdash"/>
+        <text x="0" y="-2.4892" size="1.4" layer="96" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
+        <wire x1="-1.2192" y1="-0.6096" x2="1.2192" y2="-0.6096" width="0.15" layer="94" style="shortdash"/>
+        <wire x1="-0.6096" y1="-1.2192" x2="0.6096" y2="-1.2192" width="0.15" layer="94" style="dashdot"/>
+        </symbol>
+    """,
+    "GND4" : """
+        <symbol name="{supply}">
+        <wire x1="-1.905" y1="0" x2="1.905" y2="0" width="0.15" layer="94"/>
+        <text x="0" y="-3.302" size="1.4" layer="96" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
+        <wire x1="-1.27" y1="-0.635" x2="1.27" y2="-0.635" width="0.15" layer="94"/>
+        <wire x1="-0.635" y1="-1.27" x2="0.635" y2="-1.27" width="0.15" layer="94"/>
+        <wire x1="-0.0635" y1="-2.032" x2="0.0635" y2="-2.032" width="0.15" layer="94"/>
+        </symbol>
+    """,
+    "ARROW2+:HALF" : """
+        <symbol name="{supply}">
+        <wire x1="0" y1="0" x2="-1.27" y2="-1.905" width="0.15" layer="94"/>
+        <wire x1="0" y1="1.27" x2="-1.27" y2="-0.635" width="0.15" layer="94"/>
+        <text x="1.778" y="-2.286" size="1.4" layer="96" rot="R90">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
+        <wire x1="0" y1="0" x2="0" y2="1.27" width="0.15" layer="94"/>
+        </symbol>
+    """,
+    "ARROW2-:HALF" : """
+        <symbol name="{supply}">
+        <wire x1="0" y1="-2.54" x2="-1.27" y2="-0.635" width="0.15" layer="94"/>
+        <wire x1="0" y1="-3.81" x2="-1.27" y2="-1.905" width="0.15" layer="94"/>
+        <text x="0.508" y="-0.15" size="1.4" layer="96" rot="R270">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="0" visible="off" length="short" direction="sup" rot="R270"/>
+        <wire x1="0" y1="-2.54" x2="0" y2="-3.81" width="0.15" layer="94"/>
+        </symbol>
+    """,
+    "TRIANGLE2+" : """
+        <symbol name="{supply}">
+        <wire x1="0.889" y1="-1.27" x2="0" y2="0.127" width="0.15" layer="94"/>
+        <wire x1="0" y1="0.127" x2="-0.889" y2="-1.27" width="0.15" layer="94"/>
+        <wire x1="-0.889" y1="-1.27" x2="0.889" y2="-1.27" width="0.15" layer="94"/>
+        <text x="0" y="1.778" size="1.4" layer="96" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
+        <wire x1="1.397" y1="-1.27" x2="0" y2="0.889" width="0.15" layer="94"/>
+        <wire x1="0" y1="0.889" x2="-1.397" y2="-1.27" width="0.15" layer="94"/>
+        </symbol>
+    """,
+    "TRIANGLE2-" : """
+        <symbol name="{supply}">
+        <wire x1="-0.889" y1="1.27" x2="0" y2="-0.127" width="0.15" layer="94"/>
+        <wire x1="0" y1="-0.127" x2="0.889" y2="1.27" width="0.15" layer="94"/>
+        <wire x1="-0.889" y1="1.27" x2="0.889" y2="1.27" width="0.15" layer="94"/>
+        <text x="0" y="-1.778" size="1.4" layer="96" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
+        <wire x1="-1.397" y1="1.27" x2="0" y2="-0.889" width="0.15" layer="94"/>
+        <wire x1="0" y1="-0.889" x2="1.397" y2="1.27" width="0.15" layer="94"/>
+        </symbol>
+    """,
+    "ARROW1+" : """
+        <symbol name="{supply}">
+        <wire x1="1.27" y1="-1.905" x2="0" y2="0" width="0.15" layer="94"/>
+        <wire x1="0" y1="0" x2="-1.27" y2="-1.905" width="0.15" layer="94"/>
+        <text x="0" y="1.016" size="1.4" layer="96" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
+        </symbol>
+    """,
+    "ARROW1-" : """
+        <symbol name="{supply}">
+        <wire x1="-1.27" y1="1.905" x2="0" y2="0" width="0.15" layer="94"/>
+        <wire x1="0" y1="0" x2="1.27" y2="1.905" width="0.15" layer="94"/>
+        <text x="0" y="-1.016" size="1.4" layer="96" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
+        </symbol>
+    """,
+    "ARROW3+" : """
+        <symbol name="{supply}">
+        <wire x1="1.27" y1="-1.905" x2="0" y2="0" width="0.15" layer="94"/>
+        <wire x1="0" y1="0" x2="-1.27" y2="-1.905" width="0.15" layer="94"/>
+        <wire x1="1.27" y1="-0.635" x2="0" y2="1.27" width="0.15" layer="94"/>
+        <wire x1="0" y1="1.27" x2="-1.27" y2="-0.635" width="0.15" layer="94"/>
+        <text x="0" y="3.81" size="1.4" layer="96" rot="R180" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
+        <wire x1="0" y1="2.54" x2="-1.27" y2="0.635" width="0.15" layer="94"/>
+        <wire x1="1.27" y1="0.635" x2="0" y2="2.54" width="0.15" layer="94"/>
+        </symbol>
+    """,
+    "ARROW3-" : """
+        <symbol name="{supply}">
+        <wire x1="-1.27" y1="1.905" x2="0" y2="0" width="0.15" layer="94"/>
+        <wire x1="0" y1="0" x2="1.27" y2="1.905" width="0.15" layer="94"/>
+        <wire x1="-1.27" y1="0.635" x2="0" y2="-1.27" width="0.15" layer="94"/>
+        <wire x1="0" y1="-1.27" x2="1.27" y2="0.635" width="0.15" layer="94"/>
+        <text x="0" y="-3.81" size="1.4" layer="96" rot="R180" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
+        <wire x1="-1.27" y1="-0.635" x2="0" y2="-2.54" width="0.15" layer="94"/>
+        <wire x1="0" y1="-2.54" x2="1.27" y2="-0.635" width="0.15" layer="94"/>
+        </symbol>
+    """,
+    "ARROW3-:HALF" : """
+        <symbol name="{supply}">
+        <wire x1="0" y1="-2.54" x2="-1.27" y2="-0.635" width="0.15" layer="94"/>
+        <wire x1="0" y1="-3.81" x2="-1.27" y2="-1.905" width="0.15" layer="94"/>
+        <text x="0.508" y="-0.15" size="1.4" layer="96" rot="R270">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="0" visible="off" length="short" direction="sup" rot="R270"/>
+        <wire x1="0" y1="-2.54" x2="0" y2="-3.81" width="0.15" layer="94"/>
+        <wire x1="0" y1="-5.08" x2="-1.27" y2="-3.175" width="0.15" layer="94"/>
+        <wire x1="0" y1="-3.81" x2="0" y2="-5.08" width="0.15" layer="94"/>
+        </symbol>
+    """,
+    "ARROW3+:HALF" : """
+        <symbol name="{supply}">
+        <wire x1="0" y1="0" x2="-1.27" y2="-1.905" width="0.15" layer="94"/>
+        <wire x1="0" y1="1.27" x2="-1.27" y2="-0.635" width="0.15" layer="94"/>
+        <text x="1.778" y="-2.286" size="1.4" layer="96" rot="R90">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
+        <wire x1="0" y1="0" x2="0" y2="1.27" width="0.15" layer="94"/>
+        <wire x1="0" y1="2.54" x2="-1.27" y2="0.635" width="0.15" layer="94"/>
+        <wire x1="0" y1="1.27" x2="0" y2="2.54" width="0.15" layer="94"/>
+        </symbol>
+    """,
+    "GND2:DASH" : """
+        <symbol name="{supply}">
+        <wire x1="-1.905" y1="0" x2="1.905" y2="0" width="0.15" layer="94"/>
+        <wire x1="-1.0922" y1="-0.508" x2="1.0922" y2="-0.508" width="0.15" layer="94" style="shortdash"/>
+        <text x="0" y="-1.905" size="1.4" layer="96" rot="R180" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="2.54" visible="off" length="short" direction="sup" rot="R270"/>
+        </symbol>
+    """,
+    "ARROW1+:HALF" : """
+        <symbol name="{supply}">
+        <wire x1="0" y1="0" x2="-1.27" y2="-1.905" width="0.15" layer="94"/>
+        <text x="1.778" y="-2.286" size="1.4" layer="96" rot="R90">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
+        </symbol>
+    """,
+    "ARROW1-:HALF" : """
+        <symbol name="{supply}">
+        <wire x1="0" y1="-2.54" x2="-1.27" y2="-0.635" width="0.15" layer="94"/>
+        <text x="0.508" y="-0.15" size="1.4" layer="96" rot="R270">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="0" visible="off" length="short" direction="sup" rot="R270"/>
+        </symbol>
+    """,
+    "FLAT:UP" : """
+        <symbol name="{supply}">
+        <wire x1="1.905" y1="0" x2="-1.905" y2="0" width="0.15" layer="94"/>
+        <text x="0" y="0.762" size="1.27" layer="96" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
+        </symbol>
+    """,
+    "FLAT:DOWN" : """
+        <symbol name="{supply}">
+        <wire x1="1.905" y1="0" x2="-1.905" y2="0" width="0.15" layer="94"/>
+        <text x="0" y="0.762" size="1.27" layer="96" align="center">&gt;VALUE</text>
+        <pin name="{supply}" x="0" y="-2.54" visible="off" length="short" direction="sup" rot="R90"/>
         </symbol>
     """
+}
+
+SUPPLY_SYM_ALIAS = {
+    "GND1"              : ("G", "G1", "GND", "0"),
+    "GND2"              : ("G2", ),
+    "GND2:DASH"         : ("G2D", "G3:D", "G2:DASH", "GND2D"),
+    "GND3"              : ("G3", ),
+    "GND3:DASH"         : ("G3D", "G3:D", "G3:DASH", "GND3D"),
+    "GND4"              : ("G4", ),
+    "COMMON"            : ("COM", ),
+
+    "TRIANGLE+"         : ("+", "T1+", "T1"),
+    "TRIANGLE-"         : ("-", "T1-"),
+    "TRIANGLE2+"        : ("T2+", "T2"),
+    "TRIANGLE2-"        : ("T2-", ),
+
+    "ARROW1+"           : ("A1", "A", "A+", "A1+"),
+    "ARROW1-"           : ("A1-", ),
+    "ARROW1+:HALF"      : ("A1:HALF", "A1+:HALF", "A1H", "A1+H", "A1:H", "A1+:H", "ARROW1+H"),
+    "ARROW1-:HALF"      : ("A1-:HALF", "A1-H", "A1-:H", "ARROW1-H"),
+
+    "ARROW2+"           : ("A2", "A2+"),
+    "ARROW2-"           : ("A2-", ),
+    "ARROW2+:HALF"      : ("A2:HALF", "A2+:HALF", "A2H", "A2:H", "A2+H", "A2+:H", "ARROW2+H", "ARROW2+:H"),
+    "ARROW2-:HALF"      : ("A2-:HALF", "A2-H", "A2-:H", "ARROW2-H"),
+
+    "ARROW3+"           : ("A3", "A3+"),
+    "ARROW3-"           : ("A3-", ),
+    "ARROW3+:HALF"      : ("A3:HALF", "A3+:HALF", "A3H", "A3+H", "A3:H", "A3+:H", "ARROW3+H", "ARROW3+:H"),
+    "ARROW3-:HALF"      : ("A3-:HALF", "A3-H", "A3-:H", "ARROW3-H"),
+    "FLAT:UP"           : ("FLAT+", "F+", "FLAT"),
+    "FLAT:DOWN"         : ("FLAT-", "F-"),
 }
 
 COMMAND_DOC_STYLES="""
 === Available Styles ===
 {styles}
-""".format(styles="".join(["  {}) {:20s}\n".format(idx,i) for idx,i in enumerate(sorted(SUPPLY_SYM_TEMPLATES.keys()))]))
-
-SUPPLY_SYM_TEMPLATES["g"] = SUPPLY_SYM_TEMPLATES["gnd_flat"]
-SUPPLY_SYM_TEMPLATES["+"] = SUPPLY_SYM_TEMPLATES["arrow3+"]
-SUPPLY_SYM_TEMPLATES["-"] = SUPPLY_SYM_TEMPLATES["arrow3-"]
+""".format(
+    styles="".join(["  {:2d}) {:20s} (aliases: {})\n".format(
+        idx, i, ("N/A" if (i not in SUPPLY_SYM_ALIAS) else ", ".join(SUPPLY_SYM_ALIAS[i]))
+    ) for idx,i in enumerate(sorted(SUPPLY_SYM_TEMPLATES.keys()))])
+)
 
 COMMAND_DOC=COMMAND_DOC_EXAMPLES+COMMAND_DOC_STYLES+COMMAND_DOC_INFO
 
-supplies = {}
-out_params = {
-    "items" : "",
-    "title" : ""
-}
+DEFAULT_FILE_PATH="~/EAGLE/libraries"
 
-def escape (esc,dbl=False):
-    if dbl:
-        return html.escape(html.escape(esc))
-    else:
-        return html.escape(esc)
+# Add Aliases
+for k,v in SUPPLY_SYM_ALIAS.items():
+    orig = SUPPLY_SYM_TEMPLATES[k]
+    for i in v:
+        SUPPLY_SYM_TEMPLATES[i] = orig
 
-def autostyle(name):
-    name = name.lower()
-    if (name.startswith("gnd")):
-        return "g"
-    if (name.startswith("+") or name.endswith("+")):
-        return "+"
-    if (name.startswith("-") or name.endswith("-")):
-        return "-"
-    return "+"
+class L:
+    DEBUG = False
+    @staticmethod
+    def _log (level, msg, context = None):
+        prefix = f"[{level:7} {context.contextName}]" if context is not None else f"[{level:8}]"
+        lines = msg.split("\n")
+        for idx, i in enumerate(lines):
+            if idx == len(lines)-1 and i == "":
+                break
+            sys.stderr.write(f"{prefix} {i}\n")
+        
+    @staticmethod
+    def e (msg, context = None):
+        L._log("Error", msg, context)
+        
+    @staticmethod
+    def w (msg, context = None):
+        L._log("Warning", msg, context)
+        
+    @staticmethod
+    def i (msg, context = None):
+        L._log("Info", msg, context)
+        
+    @staticmethod
+    def d (msg, context = None):
+        if L.DEBUG:
+            L._log("Debug", msg, context)
 
-def mksupply(idx, sup_name, sup_style = None):
-    if sup_name is None or len(sup_name) == 0:
-        sys.stderr.write ("[Supply #{}] **ERROR** Supply has no name.\n".format(idx+1))
-        return False
-    sup_name = sup_name.upper()
-
-    if ':' in sup_name or ';' in sup_name:
-        sys.stderr.write ("[Supply {} #{}] **ERROR** Supply name has invalid characters.\n".format(sup_name,idx+1))
-        return False
-
-    if sup_name in supplies:
-        sys.stderr.write ("[Supply {} #{}] **ERROR** Already exists.\n".format(sup_name, idx+1))
-        return False
-
-    if sup_style is None:
-        sup_style=autostyle(sup_name)
-        sys.stderr.write ("[Supply {} #{}] Adding with default style '{}'.\n".format(sup_name,idx+1,sup_style))
-    elif sup_style not in SUPPLY_SYM_TEMPLATES:
-        sup_style_tmp=autostyle(sup_name)
-        sys.stderr.write ("[Supply {} #{}] **ERROR** Style '{}' missing. Adding with '{}' instead.\n".format(sup_name,idx+1,sup_style,sup_style_tmp))
-        sup_style=sup_style_tmp
-    else:
-        sys.stderr.write ("[Supply {} #{}] Added with style '{}'\n".format(sup_name,idx+1,sup_style))
-    supplies[sup_name] = (sup_name, sup_style)
-
-    return True
-
-parser = argparse.ArgumentParser(description='Creates an Eagle CAD supply library.', formatter_class=argparse.RawTextHelpFormatter, epilog=(COMMAND_DOC))
-parser.add_argument('--add-supply', action='append',
-help='''Creates a supply to add to the library. Most characters valid except ';' and ':'.
-The argument is in the form 'SUPPLY[:style]'. Style is optional.
-Use --add-supply=-X for negative supplies.''')
-
-parser.add_argument('--supplies', type=argparse.FileType('r'), help="A JSON file containing a description of the supplies.")
-parser.add_argument('--output', type=argparse.FileType('w'), help="The output file. If not specified, use stdout.")
-parser.add_argument('--title', default="Supplies", help="Sets a title in the resulting library.")
-args = parser.parse_args()
-validated = True
-
-if (args.add_supply is None and args.supplies is None):
-    parser.error("Provide --add-supply or --supplies argument.")
-
-out_params['title'] = args.title
-
-if args.supplies is not None:
-    conf = json.load(args.supplies)
-
-    if "title" in conf:
-        out_params['title'] = conf["title"]
-
-    if "supplies" in conf:
-        if isinstance(conf["supplies"], list):
-            if len(conf["supplies"]) == 0:
-                sys.stderr.write ("[Error] No supplies defined in the configuration file.\n")
-                validated = False
-            else:
-                for idx, i in enumerate(conf["supplies"]):
-                    if "name" not in i:
-                        sys.stderr.write ("[Supply (unnamed) #{}] **ERROR** Supply has no name.\n".format(idx))
-                        validated = False
-                        continue
-                    validated = validated and mksupply(idx, i["name"], i["style"] if "style" in i else None)
+class Util:
+    @staticmethod
+    def escape (esc, dbl=False):
+        if dbl:
+            return html.escape(html.escape(esc))
         else:
-            sys.stderr.write ("[Error] Supply configuration section 'supplies' is not an array.\n")
-            validated = False
+            return html.escape(esc)
+
+    @staticmethod
+    def escape2 (esc):
+        return esc.replace("\"", "&quot;")
+
+class EagleGenError(ValueError): 
+    def __init__ (self, msg, *args, context = None, **kwargs):
+        super().__init__(msg,*args, **kwargs)
+        self.msg = msg
+        self.context = context
+        L.d(msg, context)
+        
+    def __str__ (self):
+        return f"{self.__class__.__name__}: {self.msg} [Context = {context.contextName}]" if context is not None else f"{self.__class__.__name__}: {self.msg}"
+    
+class ValidationError(EagleGenError): pass
+class FileAlreadyExists(EagleGenError): pass
+
+class Supply:
+    def __init__ (self, parent, name, style):
+        self.parent = parent
+        self.name = name
+        self.style = style
+        
+        if self.style not in SUPPLY_SYM_TEMPLATES:
+            raise ValidationError("Supply " + self.name + " requested symbol style " + self.symbol + " which does not exist.", context = self)
+            
+        L.d(f"Creating supply {self.name}.", self)
+    
+    @property
+    def symbolData (self):
+        L.d(f"Generating supply symbol using style '{self.style}'.", self)
+        
+        sup_name = self.name
+        sup_name_quote  = Util.escape2(sup_name)
+        sup_name_esc    = Util.escape(sup_name)
+        sup_name_esc2   = Util.escape(sup_name, True)
+
+        return SUPPLY_SYM_TEMPLATES[self.style].format(
+            supply=sup_name_quote,
+            supply_esc=sup_name_esc,
+            supply_esc2=sup_name_esc2,
+            supply_original=sup_name
+        )
+    
+    @property
+    def deviceData (self):
+        L.d(f"Generating device.", self)
+        
+        sup_name        = self.name
+        sup_name_quote  = Util.escape2(sup_name)
+        sup_name_esc    = Util.escape(sup_name)
+        sup_name_esc2   = Util.escape(sup_name, True)
+
+        return SUPPLY_DEV_TEMPLATE.format(
+            supply=sup_name_quote,
+            supply_esc=sup_name_esc,
+            supply_esc2=sup_name_esc2,
+            supply_original=sup_name
+        )
+        
+    @property
+    def contextName (self):
+        return self.parent.contextName + ":" + self.name
+        
+    def _clone (self, newParent):
+        return Supply(newParent, self.name, self.style)
+        
+class Group:
+    def __init__ (self, parent, name, title):
+        self.parent = parent
+        self.name = name
+        self.title = title
+        self.include = None
+        self._supplies = {}
+        
+        L.d(f"Creating group {self.name}.", self)
+        
+    def createSupply (self, name, style):
+        if name  in self._supplies:
+            raise ValidationError("Supply " + name + " already exists.", context = self)
+        self._supplies[name] = Supply(self, name, style)
+        return self._supplies[name]
+    
+    """def importSupply (self, supply):
+        if supply.name  in self._supplies:
+            raise ValidationError(f"Imported supply {supply.contextName} already exists.", context = self)
+        self._supplies[name] = Supply(self, name, style)
+        return self._supplies[name]"""
+        
+    @property
+    def supplies (self):
+        groupsVisited = []
+        return self._supplieschain(groupsVisited)
+        
+    @property
+    def filename (self):
+        return self.parent._makeFileName(self.name)
+    
+    def _supplieschain (self, groupVisited):
+        localSupplies = self._supplies.values()
+        
+        if self.include is None:
+            return localSupplies
+        
+        L.d(f"Imports {self.include.contextName} supplies.", self)
+        
+        if self in groupVisited:
+            stack = "".join(map(groupVisited, lambda x: f"    x.name\n"))
+            raise ValidationError(f"Circular inclusion of group.\nStack:\n{stack}", context = self)
+            
+        groupVisited.append(self)
+        
+        return chain(localSupplies, self.include._supplieschain(groupVisited))
+            
+    
+    @property
+    def contextName (self):
+        return self.parent.contextName + ":" + self.name
+    
+    def validate (self):
+        L.d("Validating group.", self)
+        names = []
+        for supply in self.supplies:
+            if supply.name in names:
+                raise ValidationError(f"Supply '{supply.name}' already defined in '{supply.contextName}'.", context = self)
+            names.append(supply.name)
+    
+    def write (self):
+        fn = self.filename
+        
+        L.d(f"Generating library '{fn}'.", self)
+        
+        if os.path.exists(fn):
+            if not self.parent.overwrite:
+                raise FileAlreadyExists(f"File '{fn}' already exists. Use --force to overwrite.", context=self)
+        
+        with open(fn, 'w') as fd:
+            params = {}
+            
+            params['items'] = "".join(["&lt;li&gt;" + Util.escape(i, True) + "&lt;/li&gt;" for i in self._supplies.keys()])
+            params['title'] = self.title
+            params['title_esc'] = Util.escape(params['title'], True)
+            
+            symbols = StringIO()
+            devices = StringIO()
+            
+            for supply in self.supplies:
+                symbols.write(supply.symbolData)
+                devices.write(supply.deviceData)
+                
+            fd.write(FILE_TEMPLATE.format(symbols=symbols.getvalue(),devices=devices.getvalue(), **params))
+
+
+class Config:
+    def __init__ (self, filename, basepath, prefix = ""):
+        self._groups = {}
+        self.filename = filename
+        self.prefix = prefix
+        self._basepath = basepath
+        self.overwrite = False
+        L.d(f"Creating configuration from {self.filename}.", self)
+        
+    def createGroup (self, name, title):
+        if name in self._groups:
+            raise ValidationError("Group " + name + " already exists.")
+        self._groups[name] = Group(self, name, title)
+        return self._groups[name]
+        
+    @property
+    def groups (self):
+        return self._groups.values()
+        
+    @property
+    def contextName (self):
+        return self.filename
+        
+    def _makeFileName (self, name):
+        fn = os.path.join(self.basepath, self.prefix + name + ".lbr")
+        return fn
+        
+    @property
+    def basepath(self):
+        return os.path.expanduser(self._basepath)
+    
+    def validate (self):
+        L.d("Validating groups.", supplyConfig)
+        for i in self.groups:
+            i.validate()
+            
+    def write (self):
+        L.d("Generating libraries.", self)
+        for i in self.groups:
+            i.write()
+            
+    @staticmethod
+    def parse (fd, overrideOutput = None):
+        fn          = fd.name
+        
+        L.d (f"Loading configuration from {fn}.")
+        
+        data        = json.load(fd)
+        prefix      = data["prefix"] if "prefix" in data else ""
+        out         = overrideOutput if ("output" not in data or overrideOutput is not None) else data["output"]
+        
+        L.d (f"Configuration loaded.")
+        
+        if out is None:
+            out = DEFAULT_FILE_PATH
+            
+        config = Config(fn, out, prefix)
+        
+        if "groups" not in data:
+            raise ValidationError("Configuration does not contain groups section.", context = config)
+        
+        if not type(data["groups"]) is dict:
+            raise ValidationError("Configuration contains invalid group value type. Should be dictionary.", context = config)
+        
+        # Decode groups and supply names
+        for k,v in data["groups"].items():
+            if not type(v) is dict:
+                raise ValidationError(f"Group {k} is not a ditionary.", context = config)
+                
+            title = k if "title" not in v else v["title"]
+            
+            group = config.createGroup(k, title)
+            
+            if "supplies" not in v:
+                raise ValidationError("Configuration does not contain supplies section.", context = group)
+                
+            supplies = v["supplies"]
+            
+            if not isinstance(supplies, Iterable):
+                raise ValidationError("Configuration contains invalid supply list. Should be list.", context = group)
+                
+            for supply in supplies:
+                if not type(supply) is dict:
+                    raise ValidationError("Configuration contains a supply that is malformed. Should be a dictionary.", context = group)
+                
+                if "name" not in supply:
+                    raise ValidationError("Configuration contains a supply that has no name.", context = group)
+                
+                if "style" not in supply:
+                    raise ValidationError("Configuration contains a supply without style.", context = group)
+                    
+                group.createSupply(supply["name"], supply["style"])
+                
+        # Connect group includes now that we've loaded all the groups
+        for k,v in data["groups"].items():
+            if "include" in v:
+                include = v["include"]
+                group = config._groups[k]
+                
+                if include not in config._groups:
+                    raise ValidationError(f"Group includes signals from group '{include}' but no such group exists.", context = group)
+                
+                group.include = config._groups[include]
+                L.d(f"Includes group '{group.include.contextName}'.", group)
+                
+        return config
+
+
+parser = argparse.ArgumentParser(
+    description='Creates an Eagle CAD supply library.',
+    formatter_class=argparse.RawTextHelpFormatter,
+    epilog=(COMMAND_DOC)
+)
+
+parser.add_argument(
+    'config',
+    type=argparse.FileType('r'),
+    help="A JSON file containing a description of the supplies."
+)
+
+parser.add_argument(
+    '--out',
+    help=f"Path to output directory. May be specified in json. If not specified in either, defaults to '{DEFAULT_FILE_PATH}'.",
+    required=False
+)
+
+parser.add_argument(
+    '--debug',
+    action='store_true',
+    help="Enable debug logs."
+)
+
+parser.add_argument(
+    '--force',
+    action='store_true',
+    help="Overwrite files if they already exist."
+)
+
+parser.add_argument(
+    '--mkdir',
+    action='store_true',
+    help="Create directory if needed."
+)
+
+args = parser.parse_args()
+
+if args.debug:
+    L.DEBUG=True
+
+try:
+    supplyConfig = Config.parse(args.config, args.out)
+    
+    if args.force:
+        supplyConfig.overwrite = True
+        
+    L.i(f"Validating...")
+    supplyConfig.validate()
+    
+    if os.path.exists(supplyConfig.basepath):
+        if not os.path.isdir(supplyConfig.basepath):
+            raise ValidationError(f"Path '{supplyConfig.basepath}' must be a directory.", context = supplyConfig)
     else:
-        sys.stderr.write ("[Error] No supplies section in configuration file.\n")
-        validated = False
+        if args.mkdir:
+            os.makedirs(supplyConfig.basepath)
+        else:
+            raise ValidationError(f"Path '{supplyConfig.basepath}' doesn't exist.", context = supplyConfig)
+            
+    L.i(f"Generating...")
+    supplyConfig.write()
+    
+    if len(supplyConfig.groups) > 0:
+        L.i(f"Successfully generated libraries:")
+        for i in supplyConfig.groups:
+            L.i(f"   {i.filename}")
+            
+except Exception as e:
+    if isinstance(e, json.JSONDecodeError):
+        L.e(f"Unable to load configuration due to a JSON parsing error.")
+        L.e(f"Cause:        {e.msg}")
+        L.e(f"Location:     {e.lineno}:{e.colno}")
+        L.e(f"File:         {args.config.name}")
+        
+        L.d(f"--Full Exception--", e.context)
+        L.d("".join(traceback.format_exception(None, e, e.__traceback__)), e.context)
+    elif isinstance(e, EagleGenError):
+        L.e(f"Error processing configuration.", e.context)
+        L.e(f"Cause:        {e.msg}", e.context)
+        
+        L.d(f"--Full Exception--", e.context)
+        L.d("".join(traceback.format_exception(None, e, e.__traceback__)), e.context)
+    elif isinstance(e, OSError):
+        L.e(f"I/O Error. ({errno})")
+        L.e(f"Cause:        {e.strerror}")
+        L.e(f"File:         {e.filename}")
+        
+        L.d(f"--Full Exception--", e.context)
+        L.d("".join(traceback.format_exception(None, e, e.__traceback__)), e.context)
+    else:
+        L.e(f"An exception occurred:")
+        L.e("".join(traceback.format_exception(None, e, e.__traceback__)))
 
-if args.add_supply is not None:
-    for idx, i in enumerate(args.add_supply):
-        supply_raw = i.split(':',2)
-        if supply_raw[0].startswith("|"):
-            supply_raw[0] = supply_raw[0][1:]
-        validated = validated and mksupply(idx, *supply_raw)
-
-if not validated:
-    sys.stderr.write ("[Error] Unable to generate supply library. Fix error above.\n")
-    sys.exit(1)
-
-if len(supplies) < 1:
-    sys.stderr.write ("[Info] No supplies generated.\n")
-    sys.exit(1)
-
-out_params['items'] = "".join(["&lt;li&gt;" + escape(i, True) + "&lt;/li&gt;" for i in supplies.keys()])
-out_params['title'] = out_params['title']
-out_params['title_esc'] = escape(out_params['title'], True)
-symbols = StringIO()
-devices = StringIO()
-for k,v in supplies.items():
-    sup_name = v[0]
-    sup_name_esc=escape(sup_name)
-    sup_name_esc2=escape(sup_name, True)
-    sup_style = v[1]
-    sup_style_template = SUPPLY_SYM_TEMPLATES[sup_style]
-
-    sys.stderr.write ("[Supply {}] Generating.\n".format(sup_name))
-
-    symbols.write(sup_style_template.format(supply=sup_name_esc,supply_esc=sup_name_esc2))
-    devices.write(SUPPLY_DEV_TEMPLATE.format(supply=sup_name_esc,supply_esc=sup_name_esc2))
-
-out = sys.stdout if args.output is None else args.output
-out.write(FILE_TEMPLATE.format(symbols=symbols.getvalue(),devices=devices.getvalue(), **out_params))
