@@ -812,7 +812,8 @@ try:
         L.i(f"Successfully generated libraries:")
         for i in supplyConfig.groups:
             L.i(f"   {i.filename}")
-            
+    
+    L.i(f"Successfully generated supplies.")
 except Exception as e:
     if isinstance(e, json.JSONDecodeError):
         L.e(f"Unable to load configuration due to a JSON parsing error.")

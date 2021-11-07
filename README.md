@@ -12,53 +12,82 @@ Alternatively file an issue on github to explain how I could have saved myself
 an hour or two had I been more competent using Eagle.
 
 ```
-usage: eagle-gensupply.py [-h] [--add-supply ADD_SUPPLY] [--supplies SUPPLIES]
-                          [--output OUTPUT] [--title TITLE]
+usage: eagle-gensupply.py [-h] [--out OUT] [--debug] [--force] [--mkdir] config
 
 Creates an Eagle CAD supply library.
 
+positional arguments:
+  config      A JSON file containing a description of the supplies.
+
 optional arguments:
-  -h, --help            show this help message and exit
-  --add-supply ADD_SUPPLY
-                        Creates a supply to add to the library. Most characters valid except ';' and ':'.
-                        The argument is in the form 'SUPPLY[:style]'. Style is optional.
-                        Use --add-supply=-X for negative supplies.
-  --supplies SUPPLIES   A JSON file containing a description of the supplies.
-  --output OUTPUT       The output file. If not specified, use stdout.
-  --title TITLE         Sets a title in the resulting library.
+  -h, --help  show this help message and exit
+  --out OUT   Path to output directory. May be specified in json. If not specified in either, defaults to '~/EAGLE/libraries'.
+  --debug     Enable debug logs.
+  --force     Overwrite files if they already exist.
+  --mkdir     Create directory if needed.
 
-=== Example: Supplies as a configuration file ===
+=== Example: Supply File Example ===
 
-eagle-gensupply.py --supplies example.json --output example.lbr
+eagle-gensupply.py --in example.json --out path/to/output
 
 example.json
 >>  {
->>      "title" : "My Library Title",
->>      "supplies" : [
->>          {"name":"VSupply+", "style":"StyleName1"},
->>          {"name":"VSupply-", "style":"StyleName2"},
->>          {"name":"VSupply-"}
->>      ]
+>>      "prefix" : "sup2_",               // Optional
+>>      "output" : "~/EAGLE/lbr/",        // Optional
+>>      "groups" : {
+>>          "symbolic" : {
+>>              "title" : "Supply: Symbolic",
+>>              "supplies": [
+>>                  {"name":"Gnd",      "style":"F-"},
+>>                  {"name":"Vdd",      "style":"F+"},
+>>                  {"name":"Vcc",      "style":"F+"},
+>>                  {"name":"Vee",      "style":"F-"},
+>>                  {"name":"Vss",      "style":"F-"}
+>>              ]
+>>          },
+>>          "absolute": {
+>>              "title" : "Supply: Absolute Common",
+>>              "supplies": [
+>>                  {"name":"+3V3",       "style":"F+"},
+>>                  {"name":"+5V",        "style":"F+"},
+>>                  {"name":"-3V3",       "style":"F-"},
+>>                  {"name":"-5V",        "style":"F-"}
+>>              ]
+>>          },
+>>      }
 >>  }
 
-=== Example: Supplies as Arguments ===
-
-eagle-gensupply.py --add-supply "+5V:+" --add-supply "|-5V:-"
-                   --add-supply="-12V" --add-supply="+12V"
-                   --output test.lbr
-
 === Available Styles ===
-  0) arrow2+             
-  1) arrow2-             
-  2) arrow3+             
-  3) arrow3-             
-  4) gnd_double          
-  5) gnd_flat            
-  6) split-arrow3        
+   0) ARROW1+              (aliases: A1, A, A+, A1+)
+   1) ARROW1+:HALF         (aliases: A1:HALF, A1+:HALF, A1H, A1+H, A1:H, A1+:H, ARROW1+H)
+   2) ARROW1-              (aliases: A1-)
+   3) ARROW1-:HALF         (aliases: A1-:HALF, A1-H, A1-:H, ARROW1-H)
+   4) ARROW2+              (aliases: A2, A2+)
+   5) ARROW2+:HALF         (aliases: A2:HALF, A2+:HALF, A2H, A2:H, A2+H, A2+:H, ARROW2+H, ARROW2+:H)
+   6) ARROW2-              (aliases: A2-)
+   7) ARROW2-:HALF         (aliases: A2-:HALF, A2-H, A2-:H, ARROW2-H)
+   8) ARROW3+              (aliases: A3, A3+)
+   9) ARROW3+:HALF         (aliases: A3:HALF, A3+:HALF, A3H, A3+H, A3:H, A3+:H, ARROW3+H, ARROW3+:H)
+  10) ARROW3-              (aliases: A3-)
+  11) ARROW3-:HALF         (aliases: A3-:HALF, A3-H, A3-:H, ARROW3-H)
+  12) COMMON               (aliases: COM)
+  13) FLAT:DOWN            (aliases: FLAT-, F-)
+  14) FLAT:UP              (aliases: FLAT+, F+, FLAT)
+  15) GND1                 (aliases: G, G1, GND, 0)
+  16) GND2                 (aliases: G2)
+  17) GND2:DASH            (aliases: G2D, G3:D, G2:DASH, GND2D)
+  18) GND3                 (aliases: G3)
+  19) GND3:DASH            (aliases: G3D, G3:D, G3:DASH, GND3D)
+  20) GND4                 (aliases: G4)
+  21) TRIANGLE+            (aliases: +, T1+, T1)
+  22) TRIANGLE-            (aliases: -, T1-)
+  23) TRIANGLE2+           (aliases: T2+, T2)
+  24) TRIANGLE2-           (aliases: T2-)
 
 === Developer ===
 
 Author:       Brett Foster <fosterb@cutephoton.com>
 Web:          https://www.cutephoton.com/
 URL:          https://github.com/cutephoton/eaglecad-gensupply
+
 ```
