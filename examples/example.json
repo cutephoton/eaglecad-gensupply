@@ -1,0 +1,36 @@
+{
+    "prefix" : "test_",
+    "output" : "test/",
+    
+    "groups" : {
+        "symbolic" : {
+            "title" : "Supply: Symbolic",
+            "supplies": [
+                {"name":"Gnd",      "style":"F-"},
+                {"name":"Vdd",      "style":"F+"},
+                {"name":"Vcc",      "style":"F+"},
+                {"name":"Vee",      "style":"F-"},
+                {"name":"Vss",      "style":"F-"}
+            ]
+        },
+        
+        "absolute": {
+            "title" : "Supply: Absolute Common",
+            "supplies": [
+                {"name":"+3V3",       "style":"F+"},
+                {"name":"+5V",        "style":"F+"},
+                {"name":"-3V3",       "style":"F-"},
+                {"name":"-5V",        "style":"F-"}
+            ]
+        },
+        
+        "absolute+": {
+            "title" : "Supply: Absolute Common",
+            "include" : "absolute",
+            "supplies": [
+                {"name":"+10V",       "style":"F+"},
+                {"name":"-10V",       "style":"F-"}
+            ]
+        }
+    }
+}
